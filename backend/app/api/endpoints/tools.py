@@ -1,4 +1,4 @@
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -8,6 +8,7 @@ router = APIRouter()
 
 class ServerUrl(BaseModel):
     url: str
+    resource_config: Optional[Dict[str, Any]] = None
 
 @router.post("/discover", response_model=List[Dict[str, Any]])
 async def discover_tools(
@@ -17,7 +18,7 @@ async def discover_tools(
     Discover tools from an MCP server URL.
     """
     try:
-        tools = await MCPClient.get_tools(server.url)
+        tools = await MCPClient.get_tools(server.url, resource_config=server.resource_config)
         return tools
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -6,6 +6,7 @@ from sqlalchemy.future import select
 from app.api import deps
 from app.models.category import Category
 from app.schemas.category import CategoryCreate, Category as CategorySchema
+from app.services.prompt_enhancer import PromptEnhancer
 
 router = APIRouter()
 
@@ -31,11 +32,22 @@ async def create_category(
     category_in: CategoryCreate,
 ) -> Any:
     """
-    Create new category.
+    Create new category. Enhances the user-provided system prompt via LLM before saving.
     """
+    enhanced_prompt = await PromptEnhancer.enhance(
+        user_prompt=category_in.system_prompt,
+        llm_provider=category_in.llm_provider,
+        llm_model=category_in.llm_model,
+        llm_provider_type=category_in.llm_provider_type,
+        llm_api_key=category_in.llm_api_key,
+        llm_endpoint=category_in.llm_endpoint,
+        llm_api_version=category_in.llm_api_version,
+        llm_deployment_name=category_in.llm_deployment_name,
+        llm_region=category_in.llm_region,
+    )
     category = Category(
         name=category_in.name,
-        system_prompt=category_in.system_prompt,
+        system_prompt=enhanced_prompt,
         llm_provider=category_in.llm_provider,
         llm_model=category_in.llm_model,
         llm_provider_type=category_in.llm_provider_type,

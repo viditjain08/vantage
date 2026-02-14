@@ -23,6 +23,7 @@ async def create_mcp_server(
         url=server_in.url,
         type=server_in.type,
         category_id=server_in.category_id,
+        resource_config=server_in.resource_config,
     )
     db.add(server)
     await db.commit()

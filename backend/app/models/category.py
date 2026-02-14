@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Optional
-from sqlalchemy import String, Text, ForeignKey, DateTime
+from sqlalchemy import String, Text, ForeignKey, DateTime, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 from app.models.base import Base
@@ -35,7 +35,8 @@ class MCPServer(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     url: Mapped[str] = mapped_column(String(255))
     name: Mapped[str] = mapped_column(String(100))
-    type: Mapped[str] = mapped_column(String(10))  # 'sse' or 'http'
+    type: Mapped[str] = mapped_column(String(10))  # 'sse', 'http', or 'stdio'
     category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"))
+    resource_config: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True, default=None)
 
     category: Mapped["Category"] = relationship(back_populates="mcp_servers")
