@@ -19,6 +19,7 @@ type Action =
       subtaskId: string;
       status: SubtaskStatus;
       result: string | null;
+      prompt: string | null;
     }
   | { type: "CLEAR" };
 
@@ -39,7 +40,7 @@ function reducer(
         ...state,
         subtasks: state.subtasks.map((s) =>
           s.id === action.subtaskId
-            ? { ...s, status: action.status, result: action.result }
+            ? { ...s, status: action.status, result: action.result, prompt: action.prompt ?? s.prompt }
             : s
         ),
       };
@@ -61,8 +62,8 @@ export function useTaskGraph() {
   );
 
   const handleStatusUpdate = useCallback(
-    (subtaskId: string, status: SubtaskStatus, result: string | null) => {
-      dispatch({ type: "STATUS_UPDATE", subtaskId, status, result });
+    (subtaskId: string, status: SubtaskStatus, result: string | null, prompt: string | null) => {
+      dispatch({ type: "STATUS_UPDATE", subtaskId, status, result, prompt });
     },
     []
   );

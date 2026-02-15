@@ -25,6 +25,7 @@ class Subtask(BaseModel):
     tools: list[str] = []  # tool names needed for this subtask
     status: SubtaskStatus = SubtaskStatus.PENDING
     result: Optional[str] = None
+    prompt: Optional[str] = None  # generated prompt for user subtasks
 
 
 class TaskGraph(BaseModel):

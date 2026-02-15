@@ -1,10 +1,7 @@
 "use client";
 
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { useState } from "react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Send, User, Bot, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { User, Bot, Loader2, CheckCircle2, XCircle } from "lucide-react";
 import type { SubtaskStatus, SubtaskExecutor } from "@/lib/ws-types";
 
 export interface SubtaskNodeData {
@@ -13,7 +10,6 @@ export interface SubtaskNodeData {
   executor: SubtaskExecutor;
   status: SubtaskStatus;
   result: string | null;
-  onUserSubmit?: (output: string) => void;
   [key: string]: unknown;
 }
 
@@ -32,16 +28,8 @@ const STATUS_BG_COLORS: Record<SubtaskStatus, string> = {
 };
 
 export function SubtaskNode({ data }: NodeProps) {
-  const [userInput, setUserInput] = useState("");
   const nodeData = data as SubtaskNodeData;
-  const { name, description, executor, status, result, onUserSubmit } = nodeData;
-
-  const handleSubmit = () => {
-    if (userInput.trim() && onUserSubmit) {
-      onUserSubmit(userInput);
-      setUserInput("");
-    }
-  };
+  const { name, description, executor, status, result } = nodeData;
 
   return (
     <div
@@ -82,24 +70,10 @@ export function SubtaskNode({ data }: NodeProps) {
         </div>
       )}
 
-      {/* User input field for user-type subtasks that are in_progress */}
+      {/* User subtask input is now handled in the chat interface */}
       {executor === "user" && status === "in_progress" && (
-        <div className="flex gap-1 mt-2">
-          <Input
-            value={userInput}
-            onChange={(e) => setUserInput(e.target.value)}
-            placeholder="Provide output..."
-            className="text-xs h-7 bg-gray-800 border-gray-600 text-gray-100"
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleSubmit();
-              }
-            }}
-          />
-          <Button size="icon" className="h-7 w-7" onClick={handleSubmit}>
-            <Send className="h-3 w-3" />
-          </Button>
+        <div className="text-xs text-yellow-400 mt-2 italic">
+          Waiting for input in chat...
         </div>
       )}
 

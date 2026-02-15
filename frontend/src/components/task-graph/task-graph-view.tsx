@@ -14,14 +14,12 @@ import type { TaskGraphState } from "@/hooks/use-task-graph";
 
 interface TaskGraphViewProps {
   taskGraph: TaskGraphState;
-  onUserSubtaskSubmit: (subtaskId: string, output: string) => void;
 }
 
 const nodeTypes = { subtask: SubtaskNode };
 
 function layoutGraph(
   taskGraph: TaskGraphState,
-  onUserSubtaskSubmit: (id: string, output: string) => void
 ): { nodes: Node[]; edges: Edge[] } {
   const subtasks = taskGraph.subtasks;
   const idToSubtask = new Map(subtasks.map((s) => [s.id, s]));
@@ -82,10 +80,6 @@ function layoutGraph(
           executor: subtask.executor,
           status: subtask.status,
           result: subtask.result,
-          onUserSubmit:
-            subtask.executor === "user"
-              ? (output: string) => onUserSubtaskSubmit(subtask.id, output)
-              : undefined,
         } satisfies SubtaskNodeData,
       });
     });
@@ -111,11 +105,10 @@ function layoutGraph(
 
 export function TaskGraphView({
   taskGraph,
-  onUserSubtaskSubmit,
 }: TaskGraphViewProps) {
   const { nodes, edges } = useMemo(
-    () => layoutGraph(taskGraph, onUserSubtaskSubmit),
-    [taskGraph, onUserSubtaskSubmit]
+    () => layoutGraph(taskGraph),
+    [taskGraph]
   );
 
   return (

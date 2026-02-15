@@ -18,7 +18,17 @@ MCP_SERVER_CATALOG: List[Dict[str, Any]] = [
     {"name": "Git", "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/git", "description": "Git operations including diff, log, commit, and branch management"},
 
     # Databases
-    {"name": "PostgreSQL", "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres", "description": "Query and manage PostgreSQL databases"},
+    {
+        "name": "PostgreSQL", "url": "", "type": "stdio",
+        "description": "Query and manage PostgreSQL databases",
+        "config_schema": [
+            {"name": "DATABASE_URL", "label": "Connection String", "type": "password", "required": True, "placeholder": "postgresql://user:pass@host:5432/dbname"},
+        ],
+        "stdio_config": {
+            "command": "sh",
+            "args": ["-c", "npx -y @modelcontextprotocol/server-postgres \"$DATABASE_URL\""],
+        },
+    },
     {"name": "MySQL", "url": "https://github.com/benborla/mcp-server-mysql", "description": "Query and manage MySQL databases"},
     {"name": "MongoDB", "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/mongodb", "description": "Query and manage MongoDB databases"},
     {"name": "Redis", "url": "https://github.com/modelcontextprotocol/servers/tree/main/src/redis", "description": "Redis cache and data store operations"},
@@ -39,13 +49,18 @@ MCP_SERVER_CATALOG: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "Azure", "url": "https://github.com/mashriram/azure_mcp_server", "description": "Azure cloud services and resource management",
+        "name": "Azure", "url": "", "type": "stdio",
+        "description": "Azure cloud services and resource management",
         "config_schema": [
-            {"name": "azure_tenant_id", "label": "Tenant ID", "type": "text", "required": True, "placeholder": ""},
-            {"name": "azure_client_id", "label": "Client ID", "type": "text", "required": True, "placeholder": ""},
-            {"name": "azure_client_secret", "label": "Client Secret", "type": "password", "required": True, "placeholder": ""},
-            {"name": "azure_subscription_id", "label": "Subscription ID", "type": "text", "required": True, "placeholder": ""},
+            {"name": "AZURE_TENANT_ID", "label": "Tenant ID", "type": "text", "required": True, "placeholder": ""},
+            {"name": "AZURE_CLIENT_ID", "label": "Client ID", "type": "text", "required": True, "placeholder": ""},
+            {"name": "AZURE_CLIENT_SECRET", "label": "Client Secret", "type": "password", "required": True, "placeholder": ""},
+            {"name": "AZURE_SUBSCRIPTION_ID", "label": "Subscription ID", "type": "text", "required": True, "placeholder": ""},
         ],
+        "stdio_config": {
+            "command": "npx",
+            "args": ["-y", "@azure/mcp@latest", "server", "start"],
+        },
     },
     {
         "name": "GCP", "url": "https://github.com/rishikavikondala/gcp-mcp", "description": "Google Cloud Platform services and management",

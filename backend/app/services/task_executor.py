@@ -53,8 +53,9 @@ class TaskExecutor:
             if subtask.executor == SubtaskExecutor.SYSTEM:
                 await self._execute_system_subtask(subtask)
             elif subtask.executor == SubtaskExecutor.USER and subtask.status == SubtaskStatus.PENDING:
-                # Mark user subtask as in_progress so frontend shows input
+                # Mark user subtask as in_progress and generate a prompt for the user
                 subtask.status = SubtaskStatus.IN_PROGRESS
+                subtask.prompt = self._build_user_prompt(subtask)
                 await self._send_status_update(subtask)
 
     async def _execute_system_subtask(self, subtask: Subtask):
@@ -162,6 +163,7 @@ class TaskExecutor:
             "subtask_id": subtask.id,
             "status": subtask.status.value,
             "result": subtask.result,
+            "prompt": subtask.prompt,
         }
         await self.websocket.send_json(msg)
 
@@ -174,6 +176,33 @@ class TaskExecutor:
                 "task_id": self.graph.task_id,
                 "summary": summary,
             })
+
+    def _build_user_prompt(self, subtask: Subtask) -> str:
+        """Generate a prompt that the user can paste into their local LLM to execute this subtask."""
+        dep_context = self._build_dependency_context(subtask)
+
+        prompt_parts = [
+            f"# Task: {subtask.name}",
+            "",
+            f"{subtask.description}",
+            "",
+        ]
+
+        if dep_context and dep_context != "No prerequisites.":
+            prompt_parts.extend([
+                "## Context from previous steps",
+                dep_context,
+                "",
+            ])
+
+        prompt_parts.extend([
+            "## Instructions",
+            f"Original user request: {self.graph.user_message}",
+            "",
+            "Please complete the task described above and provide your output.",
+        ])
+
+        return "\n".join(prompt_parts)
 
     def _build_dependency_context(self, subtask: Subtask) -> str:
         """Gather results from completed dependency subtasks."""

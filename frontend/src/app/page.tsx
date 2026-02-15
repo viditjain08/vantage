@@ -8,7 +8,7 @@ import { MCPServerList } from "@/components/mcp-server-list";
 import { ChatInterface, type ChatInterfaceHandle } from "@/components/chat-interface";
 import { TaskGraphView } from "@/components/task-graph/task-graph-view";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Play } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { useTaskGraph } from "@/hooks/use-task-graph";
 
@@ -38,9 +38,13 @@ export default function Home() {
     clearGraph();
   }, [selectedCategoryId, clearGraph]);
 
-  const handleUserSubtaskSubmit = useCallback((subtaskId: string, output: string) => {
-    chatRef.current?.sendUserSubtaskOutput(subtaskId, output);
-  }, []);
+  const handleStartTask = useCallback(() => {
+    if (taskGraph) {
+      chatRef.current?.sendStartTask(taskGraph.taskId);
+    }
+  }, [taskGraph]);
+
+  const isTaskPending = taskGraph?.subtasks.every((s) => s.status === "pending") ?? false;
 
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">
@@ -71,11 +75,16 @@ export default function Home() {
                                 <ArrowLeft className="h-4 w-4" />
                               </Button>
                               <h3 className="font-semibold text-sm">Task Graph</h3>
+                              {isTaskPending && (
+                                <Button size="sm" onClick={handleStartTask} className="ml-auto">
+                                  <Play className="h-3 w-3 mr-1" />
+                                  Approve & Start
+                                </Button>
+                              )}
                             </div>
                             <div className="h-[600px] border rounded-lg overflow-hidden">
                               <TaskGraphView
                                 taskGraph={taskGraph}
-                                onUserSubtaskSubmit={handleUserSubtaskSubmit}
                               />
                             </div>
                           </>

@@ -1,9 +1,31 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings, setup_logging
 from app.api.endpoints import categories, registry, tools, mcp_servers, chat
 
 setup_logging()
+
+logger = logging.getLogger("app.tracing")
+
+# Initialize Phoenix / OpenTelemetry tracing
+try:
+    from phoenix.otel import register
+    from openinference.instrumentation.langchain import LangChainInstrumentor
+
+    tracer_provider = register(
+        project_name=settings.PHOENIX_PROJECT_NAME,
+        endpoint=settings.PHOENIX_COLLECTOR_ENDPOINT,
+    )
+    LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
+    logger.info(
+        "Phoenix tracing enabled (project=%s, endpoint=%s)",
+        settings.PHOENIX_PROJECT_NAME,
+        settings.PHOENIX_COLLECTOR_ENDPOINT,
+    )
+except Exception as e:
+    logger.warning("Phoenix tracing not available: %s", e)
 
 app = FastAPI(title=settings.PROJECT_NAME)
 

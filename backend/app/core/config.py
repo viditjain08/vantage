@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     AWS_CLAUDE_REGION: Optional[str] = None
     # Uses same AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY as OpenAI AWS
 
+    # Phoenix Tracing
+    PHOENIX_COLLECTOR_ENDPOINT: Optional[str] = "http://localhost:6006/v1/traces"
+    PHOENIX_PROJECT_NAME: str = "vantage"
+
     class Config:
         env_file = ".env"
 

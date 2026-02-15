@@ -8,6 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 import httpx
 
+import os
+
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.streamable_http import streamable_http_client
@@ -19,7 +21,8 @@ from app.services.agent import AgentService
 from app.services.mcp_client import MCPClient
 from app.services.task_decomposer import TaskDecomposer
 from app.services.task_executor import TaskExecutor
-from langchain_core.messages import HumanMessage, SystemMessage
+from app.services.context_service import ContextService
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 logger = logging.getLogger("app.chat")
 
@@ -49,14 +52,21 @@ async def websocket_endpoint(
         # Open persistent MCP sessions for all servers in the category.
         async with AsyncExitStack() as stack:
             mcp_sessions = {}
+            mcp_errors = {}  # server_id -> error message
             for server in category.mcp_servers:
                 try:
                     config = server.resource_config or {}
                     if server.type == 'stdio':
+                        # Merge user-provided env with parent process env
+                        # so PATH and other essentials are preserved.
+                        stdio_env = None
+                        user_env = config.get("env")
+                        if user_env:
+                            stdio_env = {**os.environ, **user_env}
                         server_params = StdioServerParameters(
                             command=config.get("command", ""),
                             args=config.get("args", []),
-                            env=config.get("env"),
+                            env=stdio_env,
                         )
                         read, write = await stack.enter_async_context(
                             stdio_client(server_params)
@@ -85,6 +95,39 @@ async def websocket_endpoint(
                     logger.info("Connected to MCP server: %s (%s)", server.name, server.type)
                 except Exception as e:
                     logger.error("Failed to connect to MCP server %s (%s): %s", server.name, server.url, e)
+                    mcp_errors[server.id] = str(e)
+
+            # Track connection results for each server
+            connection_status = []
+            for server in category.mcp_servers:
+                session = mcp_sessions.get(server.id)
+                if session:
+                    try:
+                        result = await session.list_tools()
+                        tool_count = len(result.tools)
+                    except Exception:
+                        tool_count = 0
+                    connection_status.append({
+                        "id": server.id,
+                        "name": server.name,
+                        "connected": True,
+                        "error": None,
+                        "tool_count": tool_count,
+                    })
+                else:
+                    connection_status.append({
+                        "id": server.id,
+                        "name": server.name,
+                        "connected": False,
+                        "error": mcp_errors.get(server.id, "Unknown connection error"),
+                        "tool_count": 0,
+                    })
+
+            # Send connection status to frontend
+            await websocket.send_json({
+                "type": "mcp_connection_status",
+                "servers": connection_status,
+            })
 
             # Build agent using persistent sessions
             logger.info("Building agent for category %d (%s)", category.id, category.name)
@@ -97,15 +140,26 @@ async def websocket_endpoint(
                 for t in bundle.tools
             ]
 
+            # Initialize services
+            context_service = ContextService()
+
             # Initialize chat history with system prompt
             chat_history = []
-            system_prompt = category.system_prompt or ""
-            system_prompt += (
-                "\n\nFormat your responses in markdown. When presenting structured data, "
-                "comparisons, lists of items with attributes, or costs/metrics, "
-                "prefer using markdown tables."
+            user_defined_prompt = category.system_prompt or "You are a helpful AI assistant."
+            
+            enhanced_system_prompt = (
+                f"{user_defined_prompt}\n\n"
+                "### CORE GUIDELINES\n"
+                "1. **Markdown First**: Format ALL responses in clear, professional markdown. Use headers, bold text, and lists to improve readability.\n"
+                "2. **Data Presentation**: When presenting structured data, comparisons, metrics, or logs, YOU MUST USE MARKDOWN TABLES.\n"
+                "3. **Task Strategy**: When given a complex goal, explain your plan before executing tools.\n"
+                "4. **Interaction**: If a task requires human intervention (e.g., manual login, local script run), provide exact instructions and ask for output.\n"
+                "5. **Chain of Thought**: Briefly explain your reasoning for selecting specific tools.\n"
+                "6. **Tool Errors**: If a tool call fails or returns an error, do NOT stop or give up. "
+                "Make reasonable assumptions based on your knowledge and any other available context, "
+                "clearly state what you assumed, and continue completing the task."
             )
-            chat_history.append(SystemMessage(content=system_prompt.strip()))
+            chat_history.append(SystemMessage(content=enhanced_system_prompt))
 
             # Track active task executors
             active_executors: dict[str, TaskExecutor] = {}
@@ -124,6 +178,10 @@ async def websocket_endpoint(
                     if msg_type == "chat_message":
                         content = msg.get("content", "")
                         logger.info("[User Message] %s", content[:200])
+                        
+                        # Compress context if needed
+                        chat_history = await context_service.compress_context(chat_history, content)
+                        
                         chat_history.append(HumanMessage(content=content))
 
                         try:
@@ -149,7 +207,7 @@ async def websocket_endpoint(
                                     "subtasks": [s.model_dump() for s in task_graph.subtasks],
                                 })
 
-                                # Create executor and start eligible subtasks
+                                # Create executor and store it, but DO NOT start yet
                                 executor = TaskExecutor(
                                     task_graph=task_graph,
                                     all_tools=bundle.tools,
@@ -157,8 +215,11 @@ async def websocket_endpoint(
                                     chat_history=chat_history,
                                     websocket=websocket,
                                 )
-                                active_executors[task_graph.task_id] = executor
-                                await executor.execute_ready_subtasks()
+                                active_executors[task_graph.task_id] = {
+                                    "executor": executor,
+                                    "confirmed": False
+                                }
+                                logger.info("Task %s is pending user approval", task_graph.task_id)
                             else:
                                 # Normal chat flow
                                 logger.info("No decomposition — running normal chat flow")
@@ -186,13 +247,27 @@ async def websocket_endpoint(
                             except:
                                 pass
 
+                    elif msg_type == "start_task":
+                        task_id = msg.get("task_id")
+                        task_data = active_executors.get(task_id)
+                        if task_data and not task_data["confirmed"]:
+                            logger.info("Starting task %s after user approval", task_id)
+                            task_data["confirmed"] = True
+                            await task_data["executor"].execute_ready_subtasks()
+                        else:
+                            await websocket.send_json({
+                                "type": "error",
+                                "content": f"Task {task_id} not found or already started",
+                            })
+
                     elif msg_type == "user_subtask_output":
                         task_id = msg.get("task_id")
                         subtask_id = msg.get("subtask_id")
                         output = msg.get("output", "")
 
-                        executor = active_executors.get(task_id)
-                        if executor:
+                        task_data = active_executors.get(task_id)
+                        if task_data:
+                            executor = task_data["executor"]
                             await executor.handle_user_output(subtask_id, output)
                             if executor.is_complete():
                                 del active_executors[task_id]

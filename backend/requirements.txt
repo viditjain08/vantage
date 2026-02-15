@@ -14,3 +14,12 @@ python-dotenv
 websockets
 mcp
 langchain-anthropic
+faiss-cpu
+arize-phoenix
+openinference-instrumentation-langchain
+opentelemetry-sdk
+opentelemetry-exporter-otlp
+langchain-community
+langchain-huggingface
+tiktoken
+sentence-transformers

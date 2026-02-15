@@ -89,10 +89,15 @@ class AgentService:
                     # Create a closure for the tool execution
                     async def make_tool_func(s_url=server.url, t_name=tool_def["name"], s_config=server.resource_config):
                         async def _exec(**kwargs):
-                             res = await MCPClient.call_tool(s_url, t_name, kwargs, resource_config=s_config)
-                             # simplified result parsing
-                             content = [c.text for c in res.content if c.type == 'text']
-                             return "\n".join(content) if content else str(res)
+                            try:
+                                res = await MCPClient.call_tool(s_url, t_name, kwargs, resource_config=s_config)
+                                # simplified result parsing
+                                content = [c.text for c in res.content if c.type == 'text']
+                                return "\n".join(content) if content else str(res)
+                            except Exception as e:
+                                error_msg = f"[Tool Error] {t_name} failed: {e}. Make reasonable assumptions based on available context and proceed."
+                                logger.warning(error_msg)
+                                return error_msg
                         return _exec
 
                     tool_func = await make_tool_func()
@@ -144,16 +149,16 @@ class AgentService:
         workflow.add_node("agent", call_model)
         
         if tools:
-            tool_node = ToolNode(tools)
+            tool_node = ToolNode(tools, handle_tool_errors=True)
             workflow.add_node("tools", tool_node)
             workflow.set_entry_point("agent")
-            
+
             def should_continue(state: AgentState):
                 last_message = state["messages"][-1]
                 if last_message.tool_calls:
                     return "tools"
                 return END
-            
+
             workflow.add_conditional_edges("agent", should_continue)
             workflow.add_edge("tools", "agent")
         else:
@@ -184,11 +189,16 @@ class AgentService:
                         async def _exec(**kwargs):
                             logger.info("[Tool Call] %s | args=%s", t_name, kwargs)
                             t0 = time.time()
-                            res = await sess.call_tool(t_name, kwargs)
-                            content = [c.text for c in res.content if c.type == 'text']
-                            output = "\n".join(content) if content else str(res)
-                            logger.info("[Tool Result] %s | %.2fs | output=%s", t_name, time.time() - t0, output[:500])
-                            return output
+                            try:
+                                res = await sess.call_tool(t_name, kwargs)
+                                content = [c.text for c in res.content if c.type == 'text']
+                                output = "\n".join(content) if content else str(res)
+                                logger.info("[Tool Result] %s | %.2fs | output=%s", t_name, time.time() - t0, output[:500])
+                                return output
+                            except Exception as e:
+                                error_msg = f"[Tool Error] {t_name} failed: {e}. Make reasonable assumptions based on available context and proceed."
+                                logger.warning("[Tool Error] %s | %.2fs | %s", t_name, time.time() - t0, str(e))
+                                return error_msg
                         return _exec
 
                     tool_func = await make_tool_func()
@@ -261,7 +271,7 @@ class AgentService:
         workflow.add_node("agent", call_model)
 
         if tools:
-            tool_node = ToolNode(tools)
+            tool_node = ToolNode(tools, handle_tool_errors=True)
             workflow.add_node("tools", tool_node)
             workflow.set_entry_point("agent")
 
