@@ -1,7 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.core.config import settings
+from app.core.config import settings, setup_logging
 from app.api.endpoints import categories, registry, tools, mcp_servers, chat
+
+setup_logging()
 
 app = FastAPI(title=settings.PROJECT_NAME)
 

@@ -1,5 +1,9 @@
-from typing import List, Dict, Any, Annotated, Optional
+import logging
+import time
+from typing import List, Dict, Any, Annotated, Optional, Tuple
+from dataclasses import dataclass
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import StructuredTool
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
@@ -15,6 +19,16 @@ from mcp import ClientSession
 from app.models.category import Category
 from app.services.mcp_client import MCPClient
 from app.services.llm_factory import LLMFactory
+
+logger = logging.getLogger("app.agent")
+
+
+@dataclass
+class AgentBundle:
+    """Container for agent components returned by AgentService."""
+    graph: Any  # compiled LangGraph workflow
+    tools: List[StructuredTool]
+    llm: BaseChatModel  # unbound LLM (without tools)
 
 
 # Mapping from JSON Schema types to Python types
@@ -94,7 +108,7 @@ class AgentService:
                     )
                     tools.append(tool)
             except Exception as e:
-                print(f"Failed to load tools from {server.url}: {e}")
+                logger.error("Failed to load tools from %s: %s", server.url, e)
 
         # 3. Setup LLM using category configuration
         llm = LLMFactory.create_llm(
@@ -117,7 +131,14 @@ class AgentService:
 
         def call_model(state: AgentState):
             messages = state["messages"]
+            logger.info("[LLM Request] %d messages", len(messages))
+            for i, m in enumerate(messages):
+                role = m.__class__.__name__
+                content_preview = str(m.content)[:300] if m.content else ""
+                logger.info("  msg[%d] %s: %s", i, role, content_preview)
+            t0 = time.time()
             response = llm.invoke(messages)
+            logger.info("[LLM Response] %.2fs | content: %s", time.time() - t0, str(response.content)[:500])
             return {"messages": [response]}
 
         workflow.add_node("agent", call_model)
@@ -145,10 +166,11 @@ class AgentService:
     async def get_agent_runnable_with_sessions(
         category: Category,
         mcp_sessions: Dict[int, ClientSession],
-    ):
+    ) -> AgentBundle:
         """
         Build and return a LangGraph executable using pre-opened MCP sessions.
         Sessions are kept alive externally (e.g. by the websocket endpoint).
+        Returns an AgentBundle with the compiled graph, tools list, and unbound LLM.
         """
         # 1. Fetch tools from all persistent sessions
         tools = []
@@ -156,12 +178,17 @@ class AgentService:
             try:
                 result = await session.list_tools()
                 server_tools = [tool.model_dump() for tool in result.tools]
+                logger.info("Loaded %d tools from MCP session %s", len(server_tools), server_id)
                 for tool_def in server_tools:
                     async def make_tool_func(sess=session, t_name=tool_def["name"]):
                         async def _exec(**kwargs):
+                            logger.info("[Tool Call] %s | args=%s", t_name, kwargs)
+                            t0 = time.time()
                             res = await sess.call_tool(t_name, kwargs)
                             content = [c.text for c in res.content if c.type == 'text']
-                            return "\n".join(content) if content else str(res)
+                            output = "\n".join(content) if content else str(res)
+                            logger.info("[Tool Result] %s | %.2fs | output=%s", t_name, time.time() - t0, output[:500])
+                            return output
                         return _exec
 
                     tool_func = await make_tool_func()
@@ -177,7 +204,7 @@ class AgentService:
                     )
                     tools.append(tool)
             except Exception as e:
-                print(f"Failed to load tools from session {server_id}: {e}")
+                logger.error("Failed to load tools from session %s: %s", server_id, e)
 
         # 2. Setup LLM using category configuration
         llm = LLMFactory.create_llm(
@@ -192,15 +219,43 @@ class AgentService:
             temperature=None,
         )
 
-        if tools:
-            llm = llm.bind_tools(tools)
+        # 3. Build compiled graph
+        graph = AgentService.build_graph(llm, tools)
 
-        # 3. Define Graph
+        return AgentBundle(graph=graph, tools=tools, llm=llm)
+
+    @staticmethod
+    def build_graph(llm: BaseChatModel, tools: List[StructuredTool]):
+        """Build and compile a LangGraph workflow with the given LLM and tools."""
+        bound_llm = llm.bind_tools(tools) if tools else llm
+
         workflow = StateGraph(AgentState)
 
         def call_model(state: AgentState):
             messages = state["messages"]
-            response = llm.invoke(messages)
+
+            # Log LLM input
+            logger.info("=" * 60)
+            logger.info("[LLM Request] %d messages", len(messages))
+            for i, m in enumerate(messages):
+                role = m.__class__.__name__
+                content_preview = str(m.content)[:300] if m.content else ""
+                logger.info("  msg[%d] %s: %s", i, role, content_preview)
+                if hasattr(m, "tool_calls") and m.tool_calls:
+                    logger.info("  msg[%d] tool_calls: %s", i, m.tool_calls)
+
+            t0 = time.time()
+            response = bound_llm.invoke(messages)
+            elapsed = time.time() - t0
+
+            # Log LLM output
+            logger.info("[LLM Response] %.2fs", elapsed)
+            logger.info("  content: %s", str(response.content)[:500] if response.content else "(empty)")
+            if hasattr(response, "tool_calls") and response.tool_calls:
+                for tc in response.tool_calls:
+                    logger.info("  tool_call: %s(%s)", tc["name"], tc.get("args", {}))
+            logger.info("=" * 60)
+
             return {"messages": [response]}
 
         workflow.add_node("agent", call_model)

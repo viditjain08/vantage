@@ -1,3 +1,6 @@
+import json
+import logging
+import traceback
 from contextlib import AsyncExitStack
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,9 +17,14 @@ from app.api import deps
 from app.models.category import Category
 from app.services.agent import AgentService
 from app.services.mcp_client import MCPClient
+from app.services.task_decomposer import TaskDecomposer
+from app.services.task_executor import TaskExecutor
 from langchain_core.messages import HumanMessage, SystemMessage
 
+logger = logging.getLogger("app.chat")
+
 router = APIRouter()
+
 
 @router.websocket("/ws/chat/{category_id}")
 async def websocket_endpoint(
@@ -34,13 +42,11 @@ async def websocket_endpoint(
         )
         category = result.scalars().first()
         if not category:
-            await websocket.send_text("Error: Category not found")
+            await websocket.send_json({"type": "error", "content": "Category not found"})
             await websocket.close()
             return
 
         # Open persistent MCP sessions for all servers in the category.
-        # AsyncExitStack keeps connections alive for the websocket session
-        # and cleans them up on disconnect.
         async with AsyncExitStack() as stack:
             mcp_sessions = {}
             for server in category.mcp_servers:
@@ -76,53 +82,132 @@ async def websocket_endpoint(
                     )
                     await session.initialize()
                     mcp_sessions[server.id] = session
-                    print(f"Connected to MCP server: {server.name} ({server.type})")
+                    logger.info("Connected to MCP server: %s (%s)", server.name, server.type)
                 except Exception as e:
-                    print(f"Failed to connect to MCP server {server.name} ({server.url}): {e}")
+                    logger.error("Failed to connect to MCP server %s (%s): %s", server.name, server.url, e)
 
             # Build agent using persistent sessions
-            agent = await AgentService.get_agent_runnable_with_sessions(category, mcp_sessions)
+            logger.info("Building agent for category %d (%s)", category.id, category.name)
+            bundle = await AgentService.get_agent_runnable_with_sessions(category, mcp_sessions)
+            logger.info("Agent ready with %d tools", len(bundle.tools))
+
+            # Collect tool metadata for the decomposer
+            available_tools = [
+                {"name": t.name, "description": t.description}
+                for t in bundle.tools
+            ]
 
             # Initialize chat history with system prompt
             chat_history = []
-            if category.system_prompt:
-                chat_history.append(SystemMessage(content=category.system_prompt))
+            system_prompt = category.system_prompt or ""
+            system_prompt += (
+                "\n\nFormat your responses in markdown. When presenting structured data, "
+                "comparisons, lists of items with attributes, or costs/metrics, "
+                "prefer using markdown tables."
+            )
+            chat_history.append(SystemMessage(content=system_prompt.strip()))
+
+            # Track active task executors
+            active_executors: dict[str, TaskExecutor] = {}
 
             try:
                 while True:
-                    data = await websocket.receive_text()
-                    user_msg = HumanMessage(content=data)
-                    chat_history.append(user_msg)
-
+                    raw = await websocket.receive_text()
                     try:
-                        input_state = {"messages": chat_history}
-                        final_state = await agent.ainvoke(input_state)
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        # Fallback: treat as plain text chat message
+                        msg = {"type": "chat_message", "content": raw}
 
-                        last_msg = final_state["messages"][-1]
-                        response_text = last_msg.content
+                    msg_type = msg.get("type", "chat_message")
 
-                        # Update local history with full result
-                        chat_history = final_state["messages"]
+                    if msg_type == "chat_message":
+                        content = msg.get("content", "")
+                        logger.info("[User Message] %s", content[:200])
+                        chat_history.append(HumanMessage(content=content))
 
-                        await websocket.send_text(str(response_text))
-                    except Exception as e:
-                        import traceback
-                        print(f"Error processing message: {e}")
-                        print(traceback.format_exc())
-                        # Remove the failed user message so history stays consistent
-                        chat_history.pop()
                         try:
-                            await websocket.send_text(f"Error: {str(e)}")
-                        except:
-                            pass
+                            # Phase 1: Ask LLM whether to decompose
+                            logger.info("Checking if task decomposition is needed...")
+                            task_graph = await TaskDecomposer.maybe_decompose(
+                                user_message=content,
+                                chat_history=chat_history,
+                                category=category,
+                                available_tools=available_tools,
+                            )
+
+                            if task_graph:
+                                logger.info("Task decomposed into %d subtasks (task_id=%s)", len(task_graph.subtasks), task_graph.task_id)
+                                for s in task_graph.subtasks:
+                                    logger.info("  subtask: %s [%s] deps=%s", s.name, s.executor.value, s.dependencies)
+
+                                # Send graph to frontend
+                                await websocket.send_json({
+                                    "type": "task_graph_created",
+                                    "task_id": task_graph.task_id,
+                                    "user_message": content,
+                                    "subtasks": [s.model_dump() for s in task_graph.subtasks],
+                                })
+
+                                # Create executor and start eligible subtasks
+                                executor = TaskExecutor(
+                                    task_graph=task_graph,
+                                    all_tools=bundle.tools,
+                                    llm=bundle.llm,
+                                    chat_history=chat_history,
+                                    websocket=websocket,
+                                )
+                                active_executors[task_graph.task_id] = executor
+                                await executor.execute_ready_subtasks()
+                            else:
+                                # Normal chat flow
+                                logger.info("No decomposition — running normal chat flow")
+                                input_state = {"messages": chat_history}
+                                final_state = await bundle.graph.ainvoke(input_state)
+
+                                last_msg = final_state["messages"][-1]
+                                response_text = last_msg.content
+
+                                chat_history = final_state["messages"]
+                                logger.info("[Chat Response] %s", str(response_text)[:300])
+
+                                await websocket.send_json({
+                                    "type": "chat_response",
+                                    "content": str(response_text),
+                                })
+                        except Exception as e:
+                            logger.error("Error processing message: %s\n%s", e, traceback.format_exc())
+                            chat_history.pop()
+                            try:
+                                await websocket.send_json({
+                                    "type": "error",
+                                    "content": str(e),
+                                })
+                            except:
+                                pass
+
+                    elif msg_type == "user_subtask_output":
+                        task_id = msg.get("task_id")
+                        subtask_id = msg.get("subtask_id")
+                        output = msg.get("output", "")
+
+                        executor = active_executors.get(task_id)
+                        if executor:
+                            await executor.handle_user_output(subtask_id, output)
+                            if executor.is_complete():
+                                del active_executors[task_id]
+                        else:
+                            await websocket.send_json({
+                                "type": "error",
+                                "content": f"No active task found for task_id: {task_id}",
+                            })
+
             except WebSocketDisconnect:
-                print(f"Client disconnected from category {category_id}")
+                logger.info("Client disconnected from category %d", category_id)
 
     except Exception as e:
-        import traceback
-        print(f"Error in WebSocket setup: {e}")
-        print(traceback.format_exc())
+        logger.error("Error in WebSocket setup: %s\n%s", e, traceback.format_exc())
         try:
-            await websocket.send_text(f"Error: {str(e)}")
+            await websocket.send_json({"type": "error", "content": str(e)})
         except:
             pass

@@ -1,22 +1,28 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Sidebar } from "@/components/sidebar";
-import { Category, getCategories } from "@/lib/api";
+import { getCategories } from "@/lib/api";
 import { CreateCategoryDialog } from "@/components/create-category-dialog";
 import { MCPServerList } from "@/components/mcp-server-list";
-import { ChatInterface } from "@/components/chat-interface";
+import { ChatInterface, type ChatInterfaceHandle } from "@/components/chat-interface";
+import { TaskGraphView } from "@/components/task-graph/task-graph-view";
 import { Button } from "@/components/ui/button";
+import { ArrowLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import { useTaskGraph } from "@/hooks/use-task-graph";
 
 export default function Home() {
   const [selectedCategoryId, setSelectedCategoryId] = useState<number | undefined>(undefined);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+  const chatRef = useRef<ChatInterfaceHandle>(null);
 
   const { data: categories = [], isLoading, error } = useQuery({
     queryKey: ["categories"],
     queryFn: getCategories,
   });
+
+  const { taskGraph, handleGraphCreated, handleStatusUpdate, clearGraph } = useTaskGraph();
 
   const selectedCategory = categories.find(c => c.id === selectedCategoryId);
 
@@ -27,17 +33,26 @@ export default function Home() {
     }
   }, [categories, selectedCategoryId]);
 
+  // Clear task graph when switching categories
+  useEffect(() => {
+    clearGraph();
+  }, [selectedCategoryId, clearGraph]);
+
+  const handleUserSubtaskSubmit = useCallback((subtaskId: string, output: string) => {
+    chatRef.current?.sendUserSubtaskOutput(subtaskId, output);
+  }, []);
+
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">
-      <Sidebar 
+      <Sidebar
         categories={categories}
-        onSelectCategory={setSelectedCategoryId} 
+        onSelectCategory={setSelectedCategoryId}
         selectedCategoryId={selectedCategoryId}
         onNewCategory={() => setIsCreateDialogOpen(true)}
         isLoading={isLoading}
         error={error}
       />
-      
+
       <main className="flex-1 flex flex-col h-full overflow-hidden">
         {selectedCategory ? (
           <div className="flex-1 overflow-y-auto p-8 space-y-6">
@@ -49,22 +64,47 @@ export default function Home() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div className="space-y-4">
-                        <MCPServerList 
-                            categoryId={selectedCategory.id} 
-                            categoryName={selectedCategory.name} 
-                            servers={selectedCategory.mcp_servers || []} 
-                        />
-                        
-                        <div className="p-4 border rounded-lg bg-muted/30">
-                            <h3 className="font-semibold mb-2 text-sm">System Prompt</h3>
-                            <div className="bg-muted p-3 rounded text-xs font-mono whitespace-pre-wrap max-h-[200px] overflow-y-auto">
-                                {selectedCategory.system_prompt}
+                        {taskGraph ? (
+                          <>
+                            <div className="flex items-center gap-2">
+                              <Button variant="ghost" size="icon-xs" onClick={clearGraph}>
+                                <ArrowLeft className="h-4 w-4" />
+                              </Button>
+                              <h3 className="font-semibold text-sm">Task Graph</h3>
                             </div>
-                        </div>
+                            <div className="h-[600px] border rounded-lg overflow-hidden">
+                              <TaskGraphView
+                                taskGraph={taskGraph}
+                                onUserSubtaskSubmit={handleUserSubtaskSubmit}
+                              />
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <MCPServerList
+                              categoryId={selectedCategory.id}
+                              categoryName={selectedCategory.name}
+                              servers={selectedCategory.mcp_servers || []}
+                            />
+
+                            <div className="p-4 border rounded-lg bg-muted/30">
+                              <h3 className="font-semibold mb-2 text-sm">System Prompt</h3>
+                              <div className="bg-muted p-3 rounded text-xs font-mono whitespace-pre-wrap max-h-[200px] overflow-y-auto">
+                                {selectedCategory.system_prompt}
+                              </div>
+                            </div>
+                          </>
+                        )}
                     </div>
 
-                    <div className="h-[500px]">
-                         <ChatInterface categoryId={selectedCategory.id} />
+                    <div className="h-[700px]">
+                         <ChatInterface
+                           ref={chatRef}
+                           categoryId={selectedCategory.id}
+                           onGraphCreated={handleGraphCreated}
+                           onStatusUpdate={handleStatusUpdate}
+                           taskGraph={taskGraph}
+                         />
                     </div>
                 </div>
             </div>
@@ -80,9 +120,9 @@ export default function Home() {
         )}
       </main>
 
-      <CreateCategoryDialog 
-        open={isCreateDialogOpen} 
-        onOpenChange={setIsCreateDialogOpen} 
+      <CreateCategoryDialog
+        open={isCreateDialogOpen}
+        onOpenChange={setIsCreateDialogOpen}
       />
     </div>
   );

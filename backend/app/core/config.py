@@ -1,3 +1,6 @@
+import logging
+import sys
+
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -7,6 +10,7 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Vantage Agent"
     API_V1_STR: str = "/api/v1"
     DATABASE_URL: str
+    LOG_LEVEL: str = "INFO"
 
     # OpenAI Direct
     OPENAI_API_KEY: Optional[str] = None
@@ -43,3 +47,26 @@ def get_settings():
     return Settings()
 
 settings = get_settings()
+
+
+def setup_logging():
+    """Configure root logger for the application."""
+    log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(formatter)
+
+    root = logging.getLogger("app")
+    root.setLevel(log_level)
+    root.handlers.clear()
+    root.addHandler(handler)
+
+    # Quiet down noisy libraries
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
